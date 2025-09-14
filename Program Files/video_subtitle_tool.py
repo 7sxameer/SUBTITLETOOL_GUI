@@ -5,19 +5,111 @@ Double-click to run! Creates workspace folder and processes videos.
 """
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, scrolledtext
 import os
 import json
 import threading
 import time
 from faster_whisper import WhisperModel
 import subprocess
+import re
+from difflib import SequenceMatcher
+
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    DRAG_DROP_AVAILABLE = True
+except ImportError:
+    DRAG_DROP_AVAILABLE = False
+    DND_FILES = None
+    TkinterDnD = None
+
+# SRT Correction Functions (from srt_corrector_v4.py)
+def clean_text_for_comparison(text):
+    """Remove punctuation and normalize text for character counting and comparison"""
+    cleaned = re.sub(r'[？！。、？!.,\s\-―「」『』（）()[\]""''・?]', '', text)
+    return cleaned
+
+def extract_dialogue_from_original(original_text):
+    """Extract just the dialogue part, removing speaker names like 'Riku：' or 'Kai：'"""
+    dialogue_only = re.sub(r'^[A-Za-z]+：\s*', '', original_text.strip())
+    return dialogue_only
+
+def similarity_ratio(text1, text2):
+    """Calculate similarity ratio between two texts"""
+    return SequenceMatcher(None, text1, text2).ratio()
+
+def find_last_character_match_advanced(srt_clean, original_segment, base_length):
+    """Advanced character boundary matching with better search algorithm"""
+    srt_last_char = srt_clean[-1] if srt_clean else ""
+    best_match = None
+    best_similarity = 0
+    best_end_pos = base_length
+    
+    for offset in range(-10, 25):
+        test_end = base_length + offset
+        if test_end <= 0 or test_end > len(original_segment):
+            continue
+            
+        segment_slice = original_segment[:test_end]
+        segment_clean = clean_text_for_comparison(segment_slice)
+        
+        if not segment_clean:
+            continue
+            
+        similarity = similarity_ratio(srt_clean, segment_clean)
+        length_ratio = min(len(segment_clean), len(srt_clean)) / max(len(segment_clean), len(srt_clean)) if max(len(segment_clean), len(srt_clean)) > 0 else 0
+        last_char_bonus = 0.2 if segment_clean and segment_clean[-1] == srt_last_char else 0
+        combined_score = similarity + (length_ratio * 0.1) + last_char_bonus
+        
+        if combined_score > best_similarity:
+            best_similarity = combined_score
+            best_match = segment_slice
+            best_end_pos = test_end
+    
+    if best_match:
+        extended_end = best_end_pos
+        while extended_end < len(original_segment):
+            next_char = original_segment[extended_end]
+            if re.match(r'[？！。、？!.,\s\-―「」『』（）()[\]""''・?…]', next_char):
+                extended_end += 1
+            else:
+                break
+        
+        final_segment = original_segment[:extended_end]
+        final_clean = clean_text_for_comparison(final_segment)
+        return extended_end, final_segment, final_clean
+    
+    segment_slice = original_segment[:base_length]
+    segment_clean = clean_text_for_comparison(segment_slice)
+    return base_length, segment_slice, segment_clean
+
+def parse_srt_file(srt_path):
+    """Parse SRT file and return list of subtitle entries"""
+    with open(srt_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+    
+    blocks = re.split(r'\n\s*\n', content.strip())
+    subtitles = []
+    
+    for block in blocks:
+        lines = block.strip().split('\n')
+        if len(lines) >= 3:
+            index = lines[0]
+            timestamp = lines[1]
+            text = '\n'.join(lines[2:])
+            subtitles.append({
+                'index': int(index),
+                'timestamp': timestamp,
+                'text': text
+            })
+    
+    return subtitles
 
 class VideoSubtitleTool:
     def __init__(self, root):
         self.root = root
-        self.root.title("Video Subtitle Tool")
-        self.root.geometry("800x650")  # Reduced height
+        self.root.title("Video Subtitle Tool - Multi-Video Processing")
+        self.root.geometry("900x750")  # Increased for multi-video UI
         self.root.resizable(True, True)
         
         # Modern color scheme
@@ -45,6 +137,9 @@ class VideoSubtitleTool:
         self.video_file = tk.StringVar()
         self.model_choice = tk.StringVar(value="small")
         self.processing = False
+        self.video_list = []  # List of video files to process
+        self.current_video_index = 0
+        self.total_duration = 0  # Total duration for combined SRT timing
         
         # Setup modern styling
         self.setup_styles()
@@ -261,22 +356,64 @@ class VideoSubtitleTool:
         ttk.Button(workspace_btn_frame, text="📁 Configure Workspace", 
                   command=self.setup_workspace, style='Secondary.TButton').pack(side=tk.LEFT)
         
-        # Video selection card
-        video_card = ttk.LabelFrame(content_frame, text="  🎥 Video Selection  ", 
+        # Video selection card - Multi-video support
+        video_card = ttk.LabelFrame(content_frame, text="  🎥 Video Selection (Multi-Video Support)  ", 
                                   style='Card.TLabelframe', padding=20)
-        video_card.pack(fill=tk.X, pady=(0, 20))
+        video_card.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
         
-        ttk.Label(video_card, text="Select Video File", style='Body.TLabel').pack(anchor=tk.W, pady=(0, 10))
+        # Instructions
+        ttk.Label(video_card, text="Add videos to process (New workflow: Stitch → Transcribe → Correct → Burn)", 
+                 style='Body.TLabel').pack(anchor=tk.W, pady=(0, 10))
         
-        video_input_frame = ttk.Frame(video_card, style='Card.TFrame')
-        video_input_frame.pack(fill=tk.X, pady=(0, 10))
+        # Video list frame with scrollbar
+        list_frame = ttk.Frame(video_card, style='Card.TFrame')
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
         
-        self.video_entry = ttk.Entry(video_input_frame, textvariable=self.video_file, 
-                                   style='Modern.TEntry', font=('Segoe UI', 11))
-        self.video_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 15))
+        # Create video list with scrollbar
+        list_canvas = tk.Canvas(list_frame, height=120, bg=self.colors['surface'])
+        list_scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=list_canvas.yview)
+        self.video_list_frame = ttk.Frame(list_canvas, style='Card.TFrame')
         
-        ttk.Button(video_input_frame, text="Browse Files", 
-                  command=self.browse_video, style='Secondary.TButton').pack(side=tk.RIGHT)
+        self.video_list_frame.bind(
+            "<Configure>",
+            lambda e: list_canvas.configure(scrollregion=list_canvas.bbox("all"))
+        )
+        
+        list_canvas.create_window((0, 0), window=self.video_list_frame, anchor="nw")
+        list_canvas.configure(yscrollcommand=list_scrollbar.set)
+        
+        # Enable drag and drop on the canvas if available
+        if DRAG_DROP_AVAILABLE and DND_FILES:
+            try:
+                list_canvas.drop_target_register(DND_FILES)
+                list_canvas.dnd_bind('<<Drop>>', self.on_drop)
+            except Exception as e:
+                print(f"Drag and drop setup failed: {e}")
+        else:
+            # Add a note about drag and drop not being available
+            note_frame = ttk.Frame(video_card, style='Card.TFrame')
+            note_frame.pack(fill=tk.X, pady=(5, 0))
+            ttk.Label(note_frame, text="Note: Drag & drop not available. Use 'Add Videos' button.", 
+                     style='Body.TLabel').pack(anchor=tk.W)
+        
+        # Pack canvas and scrollbar
+        list_canvas.pack(side="left", fill="both", expand=True)
+        list_scrollbar.pack(side="right", fill="y")
+        
+        # Buttons frame
+        buttons_frame = ttk.Frame(video_card, style='Card.TFrame')
+        buttons_frame.pack(fill=tk.X)
+        
+        ttk.Button(buttons_frame, text="📁 Add Videos", 
+                  command=self.browse_videos, style='Secondary.TButton').pack(side=tk.LEFT, padx=(0, 10))
+        
+        ttk.Button(buttons_frame, text="🗑️ Clear All", 
+                  command=self.clear_video_list, style='Secondary.TButton').pack(side=tk.LEFT, padx=(0, 10))
+        
+        # Video count label
+        self.video_count_label = ttk.Label(buttons_frame, text="No videos selected", 
+                                         style='Body.TLabel')
+        self.video_count_label.pack(side=tk.RIGHT)
         
         # Model selection card - make it more compact
         model_card = ttk.LabelFrame(content_frame, text="  🤖 AI Model Configuration  ", 
@@ -316,7 +453,7 @@ class VideoSubtitleTool:
         processing_card.pack(fill=tk.X, pady=(0, 20))
         
         # Process button - make it prominent
-        self.process_btn = ttk.Button(processing_card, text="🚀 Generate Subtitles", 
+        self.process_btn = ttk.Button(processing_card, text="🚀 Process Videos & Generate Subtitles", 
                                      command=self.start_processing, style='Primary.TButton')
         self.process_btn.pack(pady=(10, 20))
         
@@ -327,7 +464,7 @@ class VideoSubtitleTool:
                                       style='Modern.Horizontal.TProgressbar')
         self.progress.pack(fill=tk.X, pady=(0, 10))
         
-        self.status_label = ttk.Label(processing_card, text="Ready to process videos", 
+        self.status_label = ttk.Label(processing_card, text="Ready for 4-step processing: Stitch → Transcribe → Correct → Burn", 
                                      style='Body.TLabel')
         self.status_label.pack(anchor=tk.W)
         
@@ -393,7 +530,7 @@ class VideoSubtitleTool:
         self.setup_workspace()
     
     def browse_video(self):
-        """Browse for video file"""
+        """Browse for video file - legacy single video method"""
         filetypes = [
             ("Video files", "*.mp4 *.avi *.mov *.mkv *.wmv *.flv *.webm *.m4v"),
             ("All files", "*.*")
@@ -405,42 +542,553 @@ class VideoSubtitleTool:
         if filename:
             self.video_file.set(filename)
     
+    def browse_videos(self):
+        """Browse for multiple video files"""
+        filetypes = [
+            ("Video files", "*.mp4 *.avi *.mov *.mkv *.wmv *.flv *.webm *.m4v"),
+            ("All files", "*.*")
+        ]
+        filenames = filedialog.askopenfilenames(
+            title="Select Video Files",
+            filetypes=filetypes
+        )
+        if filenames:
+            for filename in filenames:
+                self.add_video_to_list(filename)
+    
+    def on_drop(self, event):
+        """Handle drag and drop of video files"""
+        files = self.root.tk.splitlist(event.data)
+        video_extensions = ('.mp4', '.avi', '.mov', '.mkv', '.wmv', '.flv', '.webm', '.m4v')
+        
+        for file_path in files:
+            if file_path.lower().endswith(video_extensions):
+                self.add_video_to_list(file_path)
+    
+    def add_video_to_list(self, video_path):
+        """Add a video to the processing list"""
+        if video_path not in [v['path'] for v in self.video_list]:
+            video_info = {
+                'path': video_path,
+                'name': os.path.basename(video_path),
+                'status': 'pending',
+                'widget': None
+            }
+            self.video_list.append(video_info)
+            self.update_video_list_display()
+    
+    def remove_video_from_list(self, video_path):
+        """Remove a video from the processing list"""
+        self.video_list = [v for v in self.video_list if v['path'] != video_path]
+        self.update_video_list_display()
+    
+    def clear_video_list(self):
+        """Clear all videos from the processing list"""
+        self.video_list = []
+        self.update_video_list_display()
+    
+    def update_video_list_display(self):
+        """Update the visual display of the video list"""
+        # Clear existing widgets
+        for widget in self.video_list_frame.winfo_children():
+            widget.destroy()
+        
+        if not self.video_list:
+            # Show empty state
+            empty_label = ttk.Label(self.video_list_frame, 
+                                  text="📁 Drag & drop videos here or use 'Add Videos' button", 
+                                  style='Body.TLabel')
+            empty_label.pack(pady=20)
+        else:
+            # Show video list
+            for i, video_info in enumerate(self.video_list):
+                video_frame = ttk.Frame(self.video_list_frame, style='Card.TFrame')
+                video_frame.pack(fill=tk.X, pady=2, padx=5)
+                
+                # Video name and status
+                name_frame = ttk.Frame(video_frame, style='Card.TFrame')
+                name_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+                
+                name_label = ttk.Label(name_frame, text=f"{i+1}. {video_info['name']}", 
+                                     style='Body.TLabel')
+                name_label.pack(anchor=tk.W)
+                
+                # Status indicator
+                status_colors = {
+                    'pending': 'text_secondary',
+                    'processing': 'warning', 
+                    'completed': 'success',
+                    'error': 'error'
+                }
+                status_text = {
+                    'pending': '⏳ Waiting',
+                    'processing': '🔄 Processing',
+                    'completed': '✅ Done',
+                    'error': '❌ Error'
+                }
+                
+                status_label = ttk.Label(name_frame, 
+                                       text=status_text.get(video_info['status'], 'Unknown'),
+                                       style='Body.TLabel')
+                status_label.pack(anchor=tk.W)
+                
+                # Remove button
+                remove_btn = ttk.Button(video_frame, text="🗑️", 
+                                      command=lambda path=video_info['path']: self.remove_video_from_list(path),
+                                      width=3)
+                remove_btn.pack(side=tk.RIGHT)
+                
+                video_info['widget'] = video_frame
+        
+        # Update count label
+        count = len(self.video_list)
+        self.video_count_label.configure(text=f"{count} video{'s' if count != 1 else ''} selected")
+    
+    def get_video_duration(self, video_path):
+        """Get duration of a video file using FFmpeg"""
+        try:
+            ffmpeg_cmd = self.find_ffmpeg()
+            if not ffmpeg_cmd:
+                return 0.0
+            
+            cmd = [
+                ffmpeg_cmd, '-i', video_path,
+                '-f', 'null', '-',
+                '-v', 'quiet',
+                '-show_entries', 'format=duration',
+                '-of', 'csv=p=0'
+            ]
+            
+            # Try ffprobe first (more reliable for duration)
+            ffprobe_cmd = ffmpeg_cmd.replace('ffmpeg', 'ffprobe')
+            probe_cmd = [
+                ffprobe_cmd, '-v', 'quiet',
+                '-show_entries', 'format=duration',
+                '-of', 'csv=p=0',
+                video_path
+            ]
+            
+            try:
+                result = subprocess.run(probe_cmd, capture_output=True, text=True)
+                if result.returncode == 0 and result.stdout.strip():
+                    return float(result.stdout.strip())
+            except:
+                pass
+            
+            # Fallback to ffmpeg
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode == 0:
+                # Parse duration from stderr (ffmpeg outputs info there)
+                for line in result.stderr.split('\n'):
+                    if 'Duration:' in line:
+                        duration_str = line.split('Duration:')[1].split(',')[0].strip()
+                        time_parts = duration_str.split(':')
+                        hours = float(time_parts[0])
+                        minutes = float(time_parts[1])
+                        seconds = float(time_parts[2])
+                        return hours * 3600 + minutes * 60 + seconds
+            
+            return 0.0
+        except Exception:
+            return 0.0
+    
+    def get_transcript_input_dialog(self):
+        """Show dialog to get original transcript from user"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Original Transcript Input")
+        dialog.geometry("600x500")
+        dialog.resizable(True, True)
+        dialog.configure(bg=self.colors['background'])
+        
+        # Center the dialog
+        dialog.transient(self.root)
+        dialog.grab_set()
+        
+        # Main frame
+        main_frame = ttk.Frame(dialog, style='Main.TFrame', padding=20)
+        main_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Title
+        title_label = ttk.Label(main_frame, text="📝 Original Transcript Correction", 
+                               style='Heading.TLabel')
+        title_label.pack(pady=(0, 15))
+        
+        # Instructions
+        instructions = ttk.Label(main_frame, 
+                                text="The AI transcription is approximately 80% accurate. To improve accuracy,\n"
+                                     "please paste your original transcript text below.\n"
+                                     "This will be used to correct the generated subtitles.",
+                                style='Body.TLabel')
+        instructions.pack(pady=(0, 15))
+        
+        # Text area
+        text_frame = ttk.Frame(main_frame, style='Card.TFrame')
+        text_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
+        
+        text_label = ttk.Label(text_frame, text="Original Transcript:", style='Body.TLabel')
+        text_label.pack(anchor=tk.W, pady=(0, 5))
+        
+        # Scrolled text widget
+        self.transcript_text = scrolledtext.ScrolledText(text_frame, wrap=tk.WORD, 
+                                                        width=70, height=15,
+                                                        font=('Consolas', 10))
+        self.transcript_text.pack(fill=tk.BOTH, expand=True)
+        
+        # Buttons frame
+        button_frame = ttk.Frame(main_frame, style='Main.TFrame')
+        button_frame.pack(fill=tk.X, pady=(15, 0))
+        
+        # Result variable
+        self.transcript_result = None
+        
+        def on_skip():
+            self.transcript_result = "skip"
+            dialog.destroy()
+        
+        def on_submit():
+            transcript_content = self.transcript_text.get(1.0, tk.END).strip()
+            if not transcript_content:
+                messagebox.showwarning("Empty Transcript", 
+                                     "Please paste your transcript or click Skip to proceed without correction.")
+                return
+            self.transcript_result = transcript_content
+            dialog.destroy()
+        
+        ttk.Button(button_frame, text="Skip Correction", 
+                  command=on_skip, style='Secondary.TButton').pack(side=tk.LEFT)
+        
+        ttk.Button(button_frame, text="✓ Apply Correction", 
+                  command=on_submit, style='Primary.TButton').pack(side=tk.RIGHT)
+        
+        # Wait for dialog to close
+        dialog.wait_window()
+        
+        return self.transcript_result
+    
+    def correct_srt_with_advanced_matching(self, srt_path, original_transcript, output_path, similarity_threshold=0.40):
+        """Advanced SRT correction with improved character boundary matching"""
+        
+        # Extract dialogue only from original transcript
+        original_dialogue = extract_dialogue_from_original(original_transcript)
+        
+        # Parse SRT file
+        subtitles = parse_srt_file(srt_path)
+        
+        print(f"Correcting {len(subtitles)} subtitle entries")
+        print(f"Original dialogue length: {len(original_dialogue)} characters")
+        
+        corrected_subtitles = []
+        original_position = 0
+        
+        for i, subtitle in enumerate(subtitles):
+            srt_text = subtitle['text']
+            srt_clean = clean_text_for_comparison(srt_text)
+            base_char_count = len(srt_clean)
+            
+            if original_position >= len(original_dialogue) or base_char_count == 0:
+                corrected_subtitles.append(subtitle)
+                continue
+            
+            # Get a larger segment for advanced matching
+            search_buffer = max(30, base_char_count + 20)
+            max_segment_end = min(original_position + search_buffer, len(original_dialogue))
+            original_segment = original_dialogue[original_position:max_segment_end]
+            
+            # Advanced character boundary matching
+            actual_end_pos, matched_segment, matched_clean = find_last_character_match_advanced(
+                srt_clean, original_segment, base_char_count
+            )
+            
+            # Calculate similarity with bonuses
+            similarity = similarity_ratio(srt_clean, matched_clean)
+            bonus_score = 0
+            
+            if len(matched_clean) > 0 and len(srt_clean) > 0:
+                length_ratio = min(len(matched_clean), len(srt_clean)) / max(len(matched_clean), len(srt_clean))
+                if length_ratio > 0.8:
+                    bonus_score += 0.15
+                
+                matching_chars = sum(1 for a, b in zip(srt_clean, matched_clean) if a == b)
+                char_overlap_ratio = matching_chars / max(len(srt_clean), len(matched_clean))
+                bonus_score += char_overlap_ratio * 0.20
+            
+            final_score = similarity + bonus_score
+            
+            # Decision logic
+            should_replace = (final_score >= similarity_threshold or 
+                            (similarity >= 0.30 and bonus_score >= 0.20) or
+                            (len(matched_clean) > 5 and similarity >= 0.25))
+            
+            if should_replace:
+                corrected_subtitles.append({
+                    'index': subtitle['index'],
+                    'timestamp': subtitle['timestamp'],
+                    'text': matched_segment
+                })
+                original_position += actual_end_pos
+            else:
+                corrected_subtitles.append(subtitle)
+                advance_amount = min(base_char_count, len(original_dialogue) - original_position)
+                original_position += max(1, advance_amount // 2)
+        
+        # Write corrected SRT file
+        with open(output_path, 'w', encoding='utf-8') as f:
+            for subtitle in corrected_subtitles:
+                f.write(f"{subtitle['index']}\n")
+                f.write(f"{subtitle['timestamp']}\n")
+                f.write(f"{subtitle['text']}\n\n")
+        
+        # Calculate correction statistics
+        replaced_count = sum(1 for i, sub in enumerate(corrected_subtitles) if sub['text'] != subtitles[i]['text'])
+        correction_percentage = (replaced_count/len(subtitles)*100) if subtitles else 0
+        
+        print(f"SRT Correction complete: {replaced_count}/{len(subtitles)} subtitles corrected ({correction_percentage:.1f}%)")
+        return correction_percentage
+    
     def start_processing(self):
-        """Start processing in background thread"""
+        """Start processing multiple videos in background thread"""
         if self.processing:
             return
         
-        video_file = self.video_file.get().strip()
         workspace = self.workspace_folder.get().strip()
         
-        if not video_file or not os.path.exists(video_file):
-            messagebox.showerror("Error", "Please select a valid video file!")
+        if not self.video_list:
+            messagebox.showerror("Error", "Please add at least one video file!")
             return
         
         if not workspace or not os.path.exists(workspace):
-            messagebox.showerror("Error", "Workspace folder not found! Please change workspace.")
+            messagebox.showerror("Error", "Workspace folder not found! Please configure workspace.")
+            return
+        
+        # Validate all videos exist
+        invalid_videos = []
+        for video_info in self.video_list:
+            if not os.path.exists(video_info['path']):
+                invalid_videos.append(video_info['name'])
+        
+        if invalid_videos:
+            messagebox.showerror("Error", f"The following video files were not found:\n" + 
+                               "\n".join(invalid_videos))
             return
         
         self.processing = True
-        self.process_btn.config(text="⏳ Processing...", state="disabled")
+        self.process_btn.config(text="⏳ Processing Videos (4 Steps)...", state="disabled")
         self.progress.start(10)
-        self.status_label.config(text="Processing video...")
+        self.status_label.config(text="Starting 4-step workflow: Stitch → Transcribe → Correct → Burn...")
+        self.current_video_index = 0
+        self.total_duration = 0
         
         # Start processing in background
-        thread = threading.Thread(target=self.process_video, daemon=True)
+        thread = threading.Thread(target=self.process_multiple_videos, daemon=True)
         thread.start()
     
-    def process_video(self):
-        """Process video in background thread"""
+    def process_multiple_videos(self):
+        """Process multiple videos with new workflow: Stitch -> Transcribe -> Correct -> Burn"""
         try:
-            video_file = self.video_file.get().strip()
             workspace = self.workspace_folder.get().strip()
             model_size = self.model_choice.get()
             
-            # Generate output paths
-            base_name = os.path.splitext(os.path.basename(video_file))[0]
-            srt_file = os.path.join(workspace, f"{base_name}.srt")
-            output_video = os.path.join(workspace, f"{base_name}_with_subtitles.mp4")
+            # Create timestamp for this batch
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            base_name = f"combined_video_{timestamp}"
+            
+            # Step 1: Stitch all videos together first
+            self.update_status("Step 1/4: Stitching videos together...")
+            combined_video = os.path.join(workspace, f"{base_name}_combined.mp4")
+            
+            # Update all video statuses to show stitching in progress
+            for video_info in self.video_list:
+                video_info['status'] = 'processing'
+            self.root.after(0, self.update_video_list_display)
+            
+            success = self.stitch_videos([v['path'] for v in self.video_list], combined_video)
+            
+            if not success:
+                raise Exception("Failed to stitch videos together")
+            
+            # Mark all videos as completed for stitching phase
+            for video_info in self.video_list:
+                video_info['status'] = 'completed'
+            self.root.after(0, self.update_video_list_display)
+            
+            # Step 2: Transcribe the combined video
+            self.update_status("Step 2/4: Loading AI model...")
+            model = WhisperModel(model_size, device="cpu", compute_type="int8")
+            
+            self.update_status("Step 2/4: Transcribing combined video...")
+            segments, info = model.transcribe(combined_video, beam_size=5)
+            segments_list = list(segments)
+            
+            # Step 3: Create initial SRT file from transcription
+            self.update_status("Step 2/4: Creating initial subtitle file...")
+            initial_srt_file = os.path.join(workspace, f"{base_name}_initial.srt")
+            self.generate_srt(segments_list, initial_srt_file)
+            
+            # Step 3: Get transcript correction from user
+            self.update_status("Step 3/4: Waiting for transcript input...")
+            
+            # Show transcript input dialog on main thread
+            transcript_input = None
+            dialog_complete = threading.Event()
+            
+            def show_dialog():
+                nonlocal transcript_input
+                transcript_input = self.get_transcript_input_dialog()
+                dialog_complete.set()
+            
+            self.root.after(0, show_dialog)
+            dialog_complete.wait()  # Wait for dialog to complete
+            
+            # Process the transcript input
+            if transcript_input and transcript_input != "skip":
+                self.update_status("Step 3/4: Applying transcript correction...")
+                
+                # Create corrected SRT file
+                corrected_srt_file = os.path.join(workspace, f"{base_name}.srt")
+                correction_percentage = self.correct_srt_with_advanced_matching(
+                    initial_srt_file, transcript_input, corrected_srt_file
+                )
+                
+                # Use corrected SRT file
+                final_srt_file = corrected_srt_file
+                
+                # Update status with correction info
+                self.update_status(f"Step 3/4: Correction applied ({correction_percentage:.1f}% of subtitles corrected)")
+                
+                # Clean up initial SRT file
+                try:
+                    if os.path.exists(initial_srt_file):
+                        os.remove(initial_srt_file)
+                except:
+                    pass
+                    
+            else:
+                # User skipped correction, use original SRT
+                final_srt_file = os.path.join(workspace, f"{base_name}.srt")
+                # Rename initial file to final name
+                try:
+                    if os.path.exists(initial_srt_file):
+                        os.rename(initial_srt_file, final_srt_file)
+                except:
+                    final_srt_file = initial_srt_file
+                
+                self.update_status("Step 3/4: Correction skipped, using AI-generated subtitles...")
+            
+            # Step 4: Burn subtitles into the combined video
+            self.update_status("Step 4/4: Burning subtitles into combined video...")
+            final_output = os.path.join(workspace, f"{base_name}_with_subtitles.mp4")
+            success = self.burn_subtitles(combined_video, final_srt_file, final_output)
+            
+            if success:
+                # Cleanup intermediate combined video (keep the one with subtitles)
+                try:
+                    if os.path.exists(combined_video):
+                        os.remove(combined_video)
+                except:
+                    pass
+                
+                self.root.after(0, lambda: self.processing_complete(final_srt_file, final_output, workspace))
+            else:
+                # Even if subtitle burning failed, we have the combined video and SRT
+                self.root.after(0, lambda: self.processing_complete(final_srt_file, combined_video, workspace, 
+                                                                  subtitle_burn_failed=True))
+                
+        except Exception as e:
+            error_msg = str(e)
+            self.root.after(0, lambda: self.processing_failed(error_msg))
+    
+    def stitch_videos(self, video_paths, output_path):
+        """Stitch multiple videos together using FFmpeg"""
+        try:
+            ffmpeg_cmd = self.find_ffmpeg()
+            if not ffmpeg_cmd:
+                raise Exception("FFmpeg not found! Please install FFmpeg.")
+            
+            # Create a temporary file list for FFmpeg concat
+            temp_dir = os.path.dirname(output_path)
+            file_list_path = os.path.join(temp_dir, "video_list.txt")
+            
+            # Write file list
+            with open(file_list_path, 'w', encoding='utf-8') as f:
+                for video_path in video_paths:
+                    # Escape single quotes and backslashes for FFmpeg
+                    escaped_path = video_path.replace('\\', '/').replace("'", "'\\''")
+                    f.write(f"file '{escaped_path}'\n")
+            
+            # Use concat demuxer for faster processing
+            cmd = [
+                ffmpeg_cmd,
+                '-f', 'concat',
+                '-safe', '0',
+                '-i', file_list_path,
+                '-c', 'copy',  # Stream copy for speed
+                '-avoid_negative_ts', 'make_zero',
+                '-fflags', '+genpts',
+                '-y',
+                output_path
+            ]
+            
+            print(f"Stitching {len(video_paths)} videos...")
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            # Cleanup temp file
+            try:
+                os.remove(file_list_path)
+            except:
+                pass
+            
+            if result.returncode == 0:
+                print("Video stitching successful")
+                return True
+            else:
+                print(f"Video stitching failed: {result.stderr}")
+                
+                # Try alternative method with re-encoding
+                self.update_status("Trying alternative stitching method...")
+                return self.stitch_videos_reencoding(video_paths, output_path)
+                
+        except Exception as e:
+            print(f"Stitch videos error: {str(e)}")
+            return False
+    
+    def stitch_videos_reencoding(self, video_paths, output_path):
+        """Alternative stitching method with re-encoding (slower but more compatible)"""
+        try:
+            ffmpeg_cmd = self.find_ffmpeg()
+            if not ffmpeg_cmd:
+                return False
+            
+            # Create filter complex for concatenation
+            inputs = []
+            filter_parts = []
+            
+            for i, video_path in enumerate(video_paths):
+                inputs.extend(['-i', video_path])
+                filter_parts.append(f'[{i}:v][{i}:a]')
+            
+            filter_complex = ''.join(filter_parts) + f'concat=n={len(video_paths)}:v=1:a=1[outv][outa]'
+            
+            cmd = [
+                ffmpeg_cmd,
+                *inputs,
+                '-filter_complex', filter_complex,
+                '-map', '[outv]',
+                '-map', '[outa]',
+                '-c:v', 'libx264',
+                '-c:a', 'aac',
+                '-preset', 'fast',
+                '-crf', '23',
+                '-y',
+                output_path
+            ]
+            
+            print("Using re-encoding method for stitching...")
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            return result.returncode == 0
+            
+        except Exception:
+            return False
             
             self.update_status("Loading AI model...")
             
@@ -476,14 +1124,24 @@ class VideoSubtitleTool:
         """Update status label from background thread with modern styling"""
         self.root.after(0, lambda: self.status_label.configure(text=message))
     
-    def processing_complete(self, srt_file, output_video, workspace):
+    def processing_complete(self, srt_file, output_video, workspace, subtitle_burn_failed=False):
         """Called when processing completes successfully with modern styling"""
         self.processing = False
-        self.process_btn.config(text="🚀 Generate Subtitles", state="normal")
+        self.process_btn.config(text="🚀 Process Videos & Generate Subtitles", state="normal")
         self.progress.stop()
-        self.status_label.configure(text="✅ Processing completed successfully!")
         
-        success_msg = f"🎉 Video processing completed successfully!\n\n📝 Subtitle file: {os.path.basename(srt_file)}\n🎬 Video with subtitles: {os.path.basename(output_video)}\n\n📁 Saved in: {workspace}\n\nWould you like to open the folder to view your files?"
+        # Reset all video statuses
+        for video_info in self.video_list:
+            if video_info['status'] != 'error':
+                video_info['status'] = 'completed'
+        self.update_video_list_display()
+        
+        if subtitle_burn_failed:
+            self.status_label.configure(text="⚠️ Processing completed with warnings")
+            success_msg = f"🎬 Multi-video processing completed!\n\nWorkflow: ✅ Stitch → ✅ Transcribe → ✅ Correct → ⚠️ Burn\n\n📝 Combined subtitle file: {os.path.basename(srt_file)}\n🎥 Combined video: {os.path.basename(output_video)}\n\n⚠️ Note: Subtitle burning failed, but combined video and SRT file are ready.\nYou can use external software to add subtitles.\n\n📁 Saved in: {workspace}\n\nWould you like to open the folder to view your files?"
+        else:
+            self.status_label.configure(text="✅ Multi-video processing completed successfully!")
+            success_msg = f"🎉 Multi-video processing completed successfully!\n\nWorkflow: ✅ Stitch → ✅ Transcribe → ✅ Correct → ✅ Burn\n\n📝 Final subtitle file: {os.path.basename(srt_file)}\n🎬 Final video with subtitles: {os.path.basename(output_video)}\n\nProcessed {len(self.video_list)} video clips with transcript correction!\n\n📁 Saved in: {workspace}\n\nWould you like to open the folder to view your files?"
         
         result = messagebox.askyesno("Success!", success_msg)
         if result:
@@ -492,17 +1150,29 @@ class VideoSubtitleTool:
     def processing_failed(self, error_msg):
         """Called when processing fails - show detailed error with modern styling"""
         self.processing = False
-        self.process_btn.config(text="🚀 Generate Subtitles", state="normal")
+        self.process_btn.config(text="🚀 Process Videos & Generate Subtitles", state="normal")
         self.progress.stop()
-        self.status_label.configure(text="❌ Processing failed")
+        self.status_label.configure(text="❌ 4-step processing failed")
+        
+        # Reset video statuses
+        for video_info in self.video_list:
+            if video_info['status'] == 'processing':
+                video_info['status'] = 'error'
+        self.update_video_list_display()
         
         # Show detailed error with suggestions
-        detailed_msg = f"Processing failed with error:\n\n{error_msg}\n\n"
+        detailed_msg = f"4-step processing workflow failed:\n\n{error_msg}\n\n"
         
-        if "FFmpeg" in error_msg:
-            detailed_msg += "💡 Suggestions:\n• Make sure FFmpeg is installed\n• Try a video file with a simpler path (no commas or special characters)\n• Check if the video file is not corrupted"
-        elif "subtitles" in error_msg.lower():
-            detailed_msg += "💡 Suggestions:\n• The SRT file was created successfully\n• The issue is with burning subtitles into video\n• Try moving your video to a folder with a simple name (like C:\\Videos\\)\n• Avoid file paths with commas, apostrophes, or special characters"
+        if "stitch" in error_msg.lower():
+            detailed_msg += "💡 Failed at Step 1 (Stitching):\n• Check that all video files are valid and not corrupted\n• Ensure videos have compatible formats\n• Try videos with the same resolution and frame rate\n• Check available disk space\n• Ensure FFmpeg is properly installed"
+        elif "transcrib" in error_msg.lower():
+            detailed_msg += "💡 Failed at Step 2 (Transcription):\n• Check if the combined video contains audio\n• Try using a smaller AI model (like 'tiny' or 'base')\n• Ensure enough system memory is available\n• Check if the video file is not corrupted"
+        elif "correction" in error_msg.lower() or "dialog" in error_msg.lower():
+            detailed_msg += "💡 Failed at Step 3 (Correction):\n• The transcript input dialog may have encountered an error\n• Try running the process again\n• You can skip the correction step if needed"
+        elif "burn" in error_msg.lower() or "subtitle" in error_msg.lower():
+            detailed_msg += "💡 Failed at Step 4 (Burning):\n• The SRT file was created successfully\n• Try using external software to add subtitles\n• Check FFmpeg installation and try simpler video paths"
+        else:
+            detailed_msg += "💡 General suggestions:\n• Check all input files are accessible\n• Ensure sufficient disk space\n• Try processing fewer videos at once\n• Check FFmpeg installation"
         
         messagebox.showerror("Processing Failed", detailed_msg)
     
@@ -653,7 +1323,21 @@ class VideoSubtitleTool:
             raise e
 
 def main():
-    root = tk.Tk()
+    if DRAG_DROP_AVAILABLE and TkinterDnD:
+        try:
+            root = TkinterDnD.Tk()
+        except Exception:
+            # Fallback if TkinterDnD.Tk() fails
+            root = tk.Tk()
+    else:
+        root = tk.Tk()
+        if not DRAG_DROP_AVAILABLE:
+            messagebox.showinfo("Info", 
+                              "Drag & drop functionality not available.\n" +
+                              "Install tkinterdnd2 for drag & drop support:\n" +
+                              "pip install tkinterdnd2\n\n" +
+                              "You can still use the 'Add Videos' button.")
+    
     app = VideoSubtitleTool(root)
     root.mainloop()
 

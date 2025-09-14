@@ -1,13 +1,14 @@
 @echo off
-title Video Subtitle Tool - Starting...
+title Video Subtitle Tool - Multi-Video Processing
 
 REM Get the directory where this batch file is located
 set "TOOL_DIR=%~dp0"
 cd /d "%TOOL_DIR%"
 
 echo ========================================
-echo    Video Subtitle Tool
-echo    AI-Powered Subtitle Generation
+echo    Video Subtitle Tool v2.0
+echo    Multi-Video AI-Powered Processing
+echo    Perfect for Dzine Lipsync Workflows
 echo ========================================
 echo.
 
@@ -53,6 +54,21 @@ if errorlevel 1 (
         exit /b 1
     )
     echo [SUCCESS] faster-whisper installed successfully!
+)
+
+REM Check for tkinterdnd2 (for drag & drop support)
+python -c "import tkinterdnd2" >nul 2>&1
+if errorlevel 1 (
+    echo [WARNING] tkinterdnd2 not installed. Installing for drag & drop support...
+    pip install tkinterdnd2
+    if errorlevel 1 (
+        echo [WARNING] Failed to install tkinterdnd2. Drag & drop will not be available.
+        echo You can still use the 'Add Videos' button for multi-video processing.
+        echo Continue in 3 seconds...
+        timeout /t 3 >nul
+    ) else (
+        echo [SUCCESS] tkinterdnd2 installed successfully! Drag & drop enabled.
+    )
 )
 
 REM Check for FFmpeg
