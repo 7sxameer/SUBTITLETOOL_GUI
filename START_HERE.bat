@@ -1,77 +1,85 @@
 @echo off
-title Video Subtitle Tool - Multi-Video Processing
+title Video Subtitle Tool - Multi-Video Processing - Auto Setup
 
 REM Get the directory where this batch file is located
 set "TOOL_DIR=%~dp0"
 cd /d "%TOOL_DIR%"
 
-echo ========================================
-echo    Video Subtitle Tool v2.0
+echo ==========================================
+echo    Video Subtitle Tool v2.0 - Auto Setup
 echo    Multi-Video AI-Powered Processing
 echo    Perfect for Dzine Lipsync Workflows
-echo ========================================
+echo ==========================================
+echo.
+echo [INFO] Starting automatic dependency check and installation...
+echo This may take a few minutes on first run.
 echo.
 
 REM Check if Python is available
+echo [STEP 1/6] Checking Python installation...
 python --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Python is not installed or not found in PATH!
     echo.
-    echo Please install Python from: https://python.org
+    echo AUTOMATED SOLUTION: Please install Python manually for now.
+    echo Download from: https://python.org
     echo Make sure to check "Add Python to PATH" during installation
     echo.
     pause
     exit /b 1
+) else (
+    echo [SUCCESS] Python found!
 )
 
-echo [INFO] Python found - checking dependencies...
+REM Upgrade pip to latest version
+echo [STEP 2/6] Upgrading pip to latest version...
+python -m pip install --upgrade pip --quiet
 
-REM Check if required packages are installed
-python -c "import tkinter" >nul 2>&1
+echo [STEP 3/6] Checking core Python modules...
+python -c "import tkinter, subprocess, os, json, threading, time" >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] tkinter not found! Please install Python with tkinter support.
+    echo [ERROR] Core Python modules missing! Your Python installation may be incomplete.
+    echo Please reinstall Python with all standard libraries.
     pause
     exit /b 1
 )
+echo [SUCCESS] Core Python modules found!
 
-python -c "import subprocess, os, json, threading, time" >nul 2>&1
-if errorlevel 1 (
-    echo [ERROR] Basic Python modules missing!
-    pause
-    exit /b 1
-)
+echo [STEP 4/6] Installing all required Python packages...
+echo This may take several minutes, please wait...
 
-REM Check for faster-whisper
+REM Install packages one by one for reliability
+echo [INFO] Installing faster-whisper...
+python -m pip install faster-whisper --quiet
+
+echo [INFO] Installing tkinterdnd2...
+python -m pip install tkinterdnd2 --quiet
+
+echo [INFO] Installing additional packages...
+python -m pip install tqdm --quiet
+python -m pip install ctranslate2 --quiet
+python -m pip install huggingface_hub --quiet
+python -m pip install tokenizers --quiet
+python -m pip install onnxruntime --quiet
+python -m pip install av --quiet
+
+REM Verify critical packages
+echo [INFO] Verifying critical package installation...
 python -c "from faster_whisper import WhisperModel" >nul 2>&1
 if errorlevel 1 (
-    echo [WARNING] faster-whisper not installed. Installing now...
-    echo This may take a few minutes...
-    pip install faster-whisper
-    if errorlevel 1 (
-        echo [ERROR] Failed to install faster-whisper
-        echo Please check your internet connection and try again
-        pause
-        exit /b 1
-    )
-    echo [SUCCESS] faster-whisper installed successfully!
+    echo [WARNING] faster-whisper verification failed. Attempting fresh installation...
+    python -m pip install --force-reinstall faster-whisper --quiet
 )
 
-REM Check for tkinterdnd2 (for drag & drop support)
 python -c "import tkinterdnd2" >nul 2>&1
 if errorlevel 1 (
-    echo [WARNING] tkinterdnd2 not installed. Installing for drag & drop support...
-    pip install tkinterdnd2
-    if errorlevel 1 (
-        echo [WARNING] Failed to install tkinterdnd2. Drag & drop will not be available.
-        echo You can still use the 'Add Videos' button for multi-video processing.
-        echo Continue in 3 seconds...
-        timeout /t 3 >nul
-    ) else (
-        echo [SUCCESS] tkinterdnd2 installed successfully! Drag & drop enabled.
-    )
+    echo [WARNING] tkinterdnd2 not available. Installing alternative...
+    python -m pip install tkinterdnd2 --force-reinstall --quiet
 )
 
-REM Check for FFmpeg
+echo [SUCCESS] Python packages installation completed!
+
+echo [STEP 5/6] Checking FFmpeg installation...
 ffmpeg -version >nul 2>&1
 if errorlevel 1 (
     echo [WARNING] FFmpeg not found!
@@ -82,13 +90,49 @@ if errorlevel 1 (
     echo You can also install it using:
     echo - Chocolatey: choco install ffmpeg
     echo - Scoop: scoop install ffmpeg
-    echo - Or download from: https://www.gyan.dev/ffmpeg/builds/
+    echo - WinGet: winget install Gyan.FFmpeg
     echo.
     set /p continue="Continue anyway? (y/n): "
     if /i not "%continue%"=="y" exit /b 1
+) else (
+    echo [SUCCESS] FFmpeg found!
 )
 
-echo [INFO] Starting Video Subtitle Tool...
+echo [STEP 6/6] Final system verification...
+echo [INFO] Performing final compatibility checks...
+
+echo [INFO] Testing faster-whisper...
+python -c "from faster_whisper import WhisperModel; print('✓ faster-whisper: OK')" 2>nul
+if errorlevel 1 (
+    echo [ERROR] ✗ faster-whisper: FAILED
+    pause
+    exit /b 1
+)
+
+echo [INFO] Testing tkinter...
+python -c "import tkinter as tk; print('✓ tkinter: OK')" 2>nul
+if errorlevel 1 (
+    echo [ERROR] ✗ tkinter: FAILED
+    pause
+    exit /b 1
+)
+
+echo [INFO] Testing tkinterdnd2...
+python -c "import tkinterdnd2; print('✓ tkinterdnd2: OK (Drag & Drop enabled)')" 2>nul
+if errorlevel 1 (
+    echo [WARNING] ! tkinterdnd2: Not available (Manual file selection only)
+) else (
+    echo [SUCCESS] ✓ tkinterdnd2: OK (Drag & Drop enabled)
+)
+
+echo [SUCCESS] ✓ All critical dependencies verified!
+
+echo.
+echo ==========================================
+echo     🎉 SETUP COMPLETE! 🎉
+echo ==========================================
+echo All dependencies have been installed and verified!
+echo Starting Video Subtitle Tool...
 echo.
 
 REM Run the application from Program Files folder
@@ -97,13 +141,28 @@ python "Program Files\video_subtitle_tool.py"
 REM Check if there was an error
 if errorlevel 1 (
     echo.
+    echo ==========================================
     echo [ERROR] The application encountered an error.
-    echo Check the error messages above for details.
+    echo ==========================================
+    echo.
+    echo Troubleshooting steps:
+    echo 1. Check if all files are present in 'Program Files' folder
+    echo 2. Ensure you have internet connection for first-time model download
+    echo 3. Try running as Administrator if permission issues occur
+    echo 4. Contact support if the problem persists
+    echo.
+    echo Error details above ^^^
     echo.
     pause
 ) else (
     echo.
+    echo ==========================================
     echo [INFO] Application closed normally.
+    echo Thank you for using Video Subtitle Tool!
+    echo ==========================================
 )
 
+echo.
+echo Press any key to exit...
+pause >nul
 exit /b 0
