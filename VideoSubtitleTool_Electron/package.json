@@ -1,0 +1,83 @@
+{
+  "name": "video-subtitle-tool",
+  "version": "2.0.0",
+  "description": "AI-Powered Video Subtitle Generator with Modern UI",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build": "electron-builder",
+    "build-win": "electron-builder --win",
+    "build-portable": "electron-builder --win portable",
+    "build-all": "electron-builder --win --x64",
+    "pack": "electron-builder --dir",
+    "create-portable": "npm run build-portable && npm run package-portable",
+    "package-portable": "node scripts/create-portable.js"
+  },
+  "keywords": [
+    "video",
+    "subtitles",
+    "AI",
+    "transcription",
+    "electron"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^27.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "dependencies": {
+    "axios": "^1.5.0"
+  },
+  "build": {
+    "appId": "com.videosubtitletool.portable",
+    "productName": "VideoSubtitleTool_Portable",
+    "directories": {
+      "output": "dist-portable"
+    },
+    "files": [
+      "main.js",
+      "renderer/**/*",
+      "backend/**/*",
+      "node_modules/**/*",
+      "portable/**/*"
+    ],
+    "extraResources": [
+      {
+        "from": "backend",
+        "to": "backend"
+      },
+      {
+        "from": "../faster_whisper",
+        "to": "faster_whisper"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+
+    },
+    "portable": {
+      "artifactName": "VideoSubtitleTool_Portable.exe"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    }
+  }
+}

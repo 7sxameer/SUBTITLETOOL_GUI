@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Subtitle Tool</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="header-content">
+                <div class="app-logo">
+                    <span class="logo-icon">🎬</span>
+                    <h1 class="app-title">Video Subtitle Tool</h1>
+                </div>
+                <div class="header-subtitle">
+                    AI-powered subtitle generation with modern interface
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Status Bar -->
+            <div class="status-bar" id="statusBar">
+                <div class="status-item">
+                    <span class="status-indicator" id="backendStatus">🔴</span>
+                    <span class="status-text" id="backendText">Initializing...</span>
+                </div>
+                <div class="status-item">
+                    <span class="workspace-path" id="workspacePath">No workspace configured</span>
+                </div>
+            </div>
+
+            <!-- Workspace Section -->
+            <section class="card workspace-section">
+                <div class="card-header">
+                    <h2 class="card-title">📁 Workspace</h2>
+                    <p class="card-subtitle">Choose where your subtitle files and processed videos will be saved</p>
+                </div>
+                <div class="card-content">
+                    <div class="workspace-display" id="workspaceDisplay">
+                        <span class="workspace-text">No workspace configured</span>
+                    </div>
+                    <div class="button-group">
+                        <button class="btn btn-primary" id="configureWorkspaceBtn">
+                            🔧 Configure Workspace
+                        </button>
+                        <button class="btn btn-secondary" id="openWorkspaceBtn">
+                            📂 Open Folder
+                        </button>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Video Selection Section -->
+            <section class="card video-section">
+                <div class="card-header">
+                    <h2 class="card-title">🎥 Video Selection (Multi-Video Support)</h2>
+                    <p class="card-subtitle">Add videos to process (New workflow: Stitch → Transcribe → Correct → Burn)</p>
+                </div>
+                <div class="card-content">
+                    <!-- Drop Zone -->
+                    <div class="drop-zone" id="dropZone">
+                        <div class="drop-zone-content">
+                            <div class="drop-icon">📁</div>
+                            <div class="drop-text">
+                                <p class="drop-primary">Drag & drop videos here</p>
+                                <p class="drop-secondary">or click to browse</p>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Video List -->
+                    <div class="video-list" id="videoList" style="display: none;">
+                        <!-- Videos will be added dynamically -->
+                    </div>
+                    
+                    <div class="video-actions">
+                        <button class="btn btn-primary" id="addVideosBtn">
+                            ➕ Add Videos
+                        </button>
+                        <button class="btn btn-secondary" id="clearVideosBtn">
+                            🗑️ Clear All
+                        </button>
+                        <div class="video-count" id="videoCount">0 videos selected</div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Processing Options Section -->
+            <section class="card processing-section">
+                <div class="card-header">
+                    <h2 class="card-title">⚙️ Processing Options</h2>
+                    <p class="card-subtitle">Configure AI model quality and processing settings</p>
+                </div>
+                <div class="card-content">
+                    <div class="model-selection">
+                        <label class="form-label">AI Model Quality:</label>
+                        <div class="radio-group">
+                            <label class="radio-option">
+                                <input type="radio" name="model" value="tiny">
+                                <span class="radio-label">
+                                    <strong>Tiny</strong> - Fastest processing, basic accuracy
+                                </span>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="model" value="base">
+                                <span class="radio-label">
+                                    <strong>Base</strong> - Good balance of speed and accuracy
+                                </span>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="model" value="small" checked>
+                                <span class="radio-label">
+                                    <strong>Small</strong> - Recommended for most users
+                                </span>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="model" value="medium">
+                                <span class="radio-label">
+                                    <strong>Medium</strong> - Better accuracy, slower processing
+                                </span>
+                            </label>
+                            <label class="radio-option">
+                                <input type="radio" name="model" value="large-v3">
+                                <span class="radio-label">
+                                    <strong>Large</strong> - Best accuracy, slowest processing
+                                </span>
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <button class="btn btn-primary btn-large" id="processBtn">
+                        🚀 Process Videos & Generate Subtitles
+                    </button>
+                </div>
+            </section>
+
+            <!-- Progress Section -->
+            <section class="card progress-section" id="progressSection" style="display: none;">
+                <div class="card-header">
+                    <h2 class="card-title">📊 Progress</h2>
+                </div>
+                <div class="card-content">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progressFill"></div>
+                    </div>
+                    <div class="progress-text" id="progressText">Ready for 4-step processing: Stitch → Transcribe → Correct → Burn</div>
+                    <div class="progress-details" id="progressDetails"></div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Success Modal -->
+    <div class="modal" id="successModal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>✅ Processing Complete!</h3>
+            </div>
+            <div class="modal-body" id="successModalBody">
+                <!-- Success content -->
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" id="closeModalBtn">Close</button>
+                <button class="btn btn-primary" id="openFolderModalBtn">Open Folder</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Error Modal -->
+    <div class="modal" id="errorModal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>❌ Processing Failed</h3>
+            </div>
+            <div class="modal-body" id="errorModalBody">
+                <!-- Error content -->
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-primary" id="closeErrorModalBtn">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- SRT Correction Modal -->
+    <div class="modal" id="correctionModal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>📝 Correct SRT Subtitles</h3>
+            </div>
+            <div class="modal-body" id="correctionModalBody">
+                <!-- Correction content -->
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="app.hideModal('correctionModal')">Cancel</button>
+                <button class="btn btn-primary" id="submitCorrectionBtn" onclick="app.submitCorrection()">
+                    🔧 Correct SRT & Burn Subtitles
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

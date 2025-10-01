@@ -1,0 +1,9 @@
+{
+  "name": "video-subtitle-tool-ultimate",
+  "version": "2.0.0",
+  "description": "Ultimate portable AI video subtitle tool",
+  "main": "main.js",
+  "dependencies": {
+    "electron": "27.0.0"
+  }
+}
